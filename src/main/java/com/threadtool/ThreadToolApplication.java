@@ -5,7 +5,6 @@ import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 
 import java.io.IOException;
-import java.io.UncheckedIOException;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
@@ -404,6 +403,8 @@ public final class ThreadToolApplication {
     }
 
     static final class ApiException extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+
         private final int statusCode;
         private final String code;
 
