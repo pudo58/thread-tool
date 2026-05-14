@@ -1,5 +1,10 @@
 package com.threadtool;
 
+import com.threadtool.domain.DraftStatus;
+import com.threadtool.error.ApiException;
+import com.threadtool.service.ApplicationState;
+import com.threadtool.util.Json;
+
 import java.util.Map;
 import java.util.Optional;
 
@@ -11,11 +16,12 @@ public final class ThreadToolApplicationTest {
         createsDraftWithConfiguredShopeeLink();
         requiresAffiliateLinkBeforeDrafting();
         validatesTemplatePlaceholders();
+        selectsTemplateByLanguageForCandidates();
         parsesAndStringifiesJson();
     }
 
     private static void createsDraftWithConfiguredShopeeLink() {
-        ThreadToolApplication.ApplicationState state = new ThreadToolApplication.ApplicationState();
+        ApplicationState state = new ApplicationState();
         state.upsertAffiliateLink("Shopee Main", "https://s.shopee.vn/example-affiliate", true);
 
         Map<String, Object> draft = state.createDraft(
@@ -26,7 +32,7 @@ public final class ThreadToolApplicationTest {
         assertEquals("Deal nay dang hot https://s.shopee.vn/example-affiliate", draft.get("commentText"));
         assertEquals("PENDING_REVIEW", draft.get("status"));
 
-        state.setDraftStatus((Long) draft.get("id"), ThreadToolApplication.DraftStatus.APPROVED);
+        state.setDraftStatus((Long) draft.get("id"), DraftStatus.APPROVED);
         Map<String, Object> exported = state.exportDrafts("approved");
 
         assertEquals(1, exported.get("count"));
@@ -34,31 +40,56 @@ public final class ThreadToolApplicationTest {
     }
 
     private static void requiresAffiliateLinkBeforeDrafting() {
-        ThreadToolApplication.ApplicationState state = new ThreadToolApplication.ApplicationState();
+        ApplicationState state = new ApplicationState();
         expectApiException(() -> state.createDraft("", "Can mua thi xem link nay", Optional.empty()));
     }
 
     private static void validatesTemplatePlaceholders() {
-        ThreadToolApplication.ApplicationState state = new ThreadToolApplication.ApplicationState();
+        ApplicationState state = new ApplicationState();
         expectApiException(() -> state.updateTemplate("[context]"));
         state.updateTemplate("[context]\n[link_affiliate]");
     }
 
+    private static void selectsTemplateByLanguageForCandidates() {
+        ApplicationState state = new ApplicationState();
+        state.upsertAffiliateLink("Shopee Main", "https://s.shopee.vn/example-affiliate", true);
+        state.upsertCommentTemplate(
+                "vietnamese-soft",
+                "vi",
+                "[context] Link minh de day nha: [link_affiliate]",
+                true
+        );
+
+        Map<String, Object> result = state.importCandidateAndCreateDraft(
+                "https://www.threads.net/@brand/post/456",
+                "Bai nay dang viral",
+                "vi",
+                12000,
+                Optional.of("shopee-main"),
+                Optional.empty()
+        );
+        Map<?, ?> draft = (Map<?, ?>) result.get("draft");
+
+        assertEquals("vietnamese-soft", draft.get("templateLabel"));
+        assertEquals("vi", draft.get("language"));
+        assertEquals("Bai nay dang viral Link minh de day nha: https://s.shopee.vn/example-affiliate", draft.get("commentText"));
+    }
+
     private static void parsesAndStringifiesJson() {
-        Map<String, Object> parsed = ThreadToolApplication.Json.parseObject("""
+        Map<String, Object> parsed = Json.parseObject("""
                 {"label":"Shopee","active":true,"count":2}
                 """);
 
         assertEquals("Shopee", parsed.get("label"));
         assertEquals(true, parsed.get("active"));
         assertEquals(2L, parsed.get("count"));
-        assertEquals("{\"message\":\"hello\\nworld\"}", ThreadToolApplication.Json.stringify(Map.of("message", "hello\nworld")));
+        assertEquals("{\"message\":\"hello\\nworld\"}", Json.stringify(Map.of("message", "hello\nworld")));
     }
 
     private static void expectApiException(Runnable runnable) {
         try {
             runnable.run();
-        } catch (ThreadToolApplication.ApiException exception) {
+        } catch (ApiException exception) {
             return;
         }
         throw new AssertionError("Expected ApiException");
