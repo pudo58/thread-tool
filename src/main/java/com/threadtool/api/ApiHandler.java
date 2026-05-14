@@ -3,23 +3,34 @@ package com.threadtool.api;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.threadtool.domain.DraftStatus;
+import com.threadtool.domain.ThreadsCredentials;
 import com.threadtool.error.ApiException;
 import com.threadtool.service.ApplicationState;
+import com.threadtool.service.HttpThreadsGraphClient;
 import com.threadtool.service.ThreadsAutomationGuard;
+import com.threadtool.service.ThreadsPublishService;
 import com.threadtool.util.Json;
 
 import java.io.IOException;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 
 public final class ApiHandler implements HttpHandler {
     private final ApplicationState state;
+    private final ThreadsPublishService threadsPublishService;
 
     public ApiHandler(ApplicationState state) {
+        this(state, new ThreadsPublishService(new HttpThreadsGraphClient()));
+    }
+
+    ApiHandler(ApplicationState state, ThreadsPublishService threadsPublishService) {
         this.state = state;
+        this.threadsPublishService = threadsPublishService;
     }
 
     @Override
@@ -58,6 +69,20 @@ public final class ApiHandler implements HttpHandler {
 
         if ("GET".equals(method) && "/api/config".equals(path)) {
             sendJson(exchange, 200, state.snapshotConfig());
+            return;
+        }
+
+        if ("GET".equals(method) && "/api/config/threads-graph".equals(path)) {
+            sendJson(exchange, 200, state.threadsGraphConfigSnapshot());
+            return;
+        }
+
+        if ("POST".equals(method) && "/api/config/threads-graph".equals(path)) {
+            Map<String, Object> body = readJsonObject(exchange);
+            sendJson(exchange, 200, state.configureThreadsGraph(
+                    requiredString(body, "threadsUserId"),
+                    requiredString(body, "accessToken")
+            ));
             return;
         }
 
@@ -140,6 +165,16 @@ public final class ApiHandler implements HttpHandler {
             return;
         }
 
+        if (path.startsWith("/api/threads/publish/")) {
+            handleThreadsPublish(exchange, method, path);
+            return;
+        }
+
+        if (path.startsWith("/api/threads/containers/")) {
+            handleThreadsContainers(exchange, method, path);
+            return;
+        }
+
         if ("POST".equals(method) && isBlockedThreadsAutomationPath(path)) {
             throw ThreadsAutomationGuard.blocked("Threads login, viral discovery, and automated commenting");
         }
@@ -150,6 +185,60 @@ public final class ApiHandler implements HttpHandler {
         }
 
         throw new ApiException(404, "NOT_FOUND", "Endpoint not found");
+    }
+
+    private void handleThreadsPublish(HttpExchange exchange, String method, String path) throws IOException {
+        if (!"POST".equals(method)) {
+            throw new ApiException(405, "METHOD_NOT_ALLOWED", "Threads publish endpoints require POST");
+        }
+
+        Map<String, Object> body = readJsonObject(exchange);
+        ThreadsCredentials credentials = threadsCredentials(body);
+        switch (path) {
+            case "/api/threads/publish/text" -> sendJson(exchange, 200, threadsPublishService.publishText(
+                    credentials,
+                    requiredString(body, "text")
+            ));
+            case "/api/threads/publish/image" -> sendJson(exchange, 200, threadsPublishService.publishImage(
+                    credentials,
+                    requiredString(body, "text"),
+                    requiredString(body, "imageUrl")
+            ));
+            case "/api/threads/publish/carousel" -> sendJson(exchange, 200, threadsPublishService.publishCarousel(
+                    credentials,
+                    requiredString(body, "text"),
+                    requiredStringList(body, "imageUrls")
+            ));
+            case "/api/threads/publish/video" -> sendJson(exchange, 200, threadsPublishService.publishVideo(
+                    credentials,
+                    requiredString(body, "text"),
+                    requiredString(body, "videoUrl"),
+                    optionalBoolean(body, "waitForReady").orElse(false),
+                    optionalLong(body, "maxStatusChecks").orElse((long) ThreadsPublishService.defaultVideoStatusChecks()).intValue(),
+                    optionalLong(body, "statusCheckIntervalMillis").orElse(ThreadsPublishService.defaultVideoStatusIntervalMillis())
+            ));
+            case "/api/threads/publish/container" -> sendJson(exchange, 200, threadsPublishService.publishExistingContainer(
+                    credentials,
+                    requiredString(body, "creationId")
+            ));
+            default -> throw new ApiException(404, "NOT_FOUND", "Threads publish endpoint not found");
+        }
+    }
+
+    private void handleThreadsContainers(HttpExchange exchange, String method, String path) throws IOException {
+        if (!"POST".equals(method)) {
+            throw new ApiException(405, "METHOD_NOT_ALLOWED", "Threads container endpoints require POST");
+        }
+
+        if (!"/api/threads/containers/status".equals(path)) {
+            throw new ApiException(404, "NOT_FOUND", "Threads container endpoint not found");
+        }
+
+        Map<String, Object> body = readJsonObject(exchange);
+        sendJson(exchange, 200, threadsPublishService.getContainerStatus(
+                threadsCredentials(body),
+                requiredString(body, "creationId")
+        ));
     }
 
     private void handleDraftById(HttpExchange exchange, String method, String path) throws IOException {
@@ -248,6 +337,51 @@ public final class ApiHandler implements HttpHandler {
             return Optional.of(integerValue.longValue());
         }
         throw new ApiException(400, "INVALID_FIELD", fieldName + " must be a number");
+    }
+
+    private ThreadsCredentials threadsCredentials(Map<String, Object> body) {
+        return state.resolveThreadsCredentials(
+                optionalString(body, "threadsUserId"),
+                optionalString(body, "accessToken")
+        );
+    }
+
+    private static List<String> requiredStringList(Map<String, Object> body, String fieldName) {
+        Object value = body.get(fieldName);
+        if (value == null) {
+            throw new ApiException(400, "MISSING_FIELD", fieldName + " is required");
+        }
+
+        if (value instanceof String stringValue) {
+            List<String> values = new ArrayList<>();
+            for (String item : stringValue.split(",")) {
+                if (!item.isBlank()) {
+                    values.add(item.trim());
+                }
+            }
+            if (values.isEmpty()) {
+                throw new ApiException(400, "INVALID_FIELD", fieldName + " must contain at least one string");
+            }
+            return values;
+        }
+
+        if (value instanceof Iterable<?> iterable) {
+            List<String> values = new ArrayList<>();
+            for (Object item : iterable) {
+                if (!(item instanceof String stringItem)) {
+                    throw new ApiException(400, "INVALID_FIELD", fieldName + " must contain only strings");
+                }
+                if (!stringItem.isBlank()) {
+                    values.add(stringItem.trim());
+                }
+            }
+            if (values.isEmpty()) {
+                throw new ApiException(400, "INVALID_FIELD", fieldName + " must contain at least one string");
+            }
+            return values;
+        }
+
+        throw new ApiException(400, "INVALID_FIELD", fieldName + " must be an array of strings or a comma-separated string");
     }
 
     private static void addCorsHeaders(HttpExchange exchange) {

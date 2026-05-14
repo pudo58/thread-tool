@@ -4,6 +4,7 @@ import com.threadtool.domain.AffiliateLink;
 import com.threadtool.domain.CommentTemplate;
 import com.threadtool.domain.DraftComment;
 import com.threadtool.domain.DraftStatus;
+import com.threadtool.domain.ThreadsCredentials;
 import com.threadtool.domain.ViralPostCandidate;
 import com.threadtool.error.ApiException;
 
@@ -25,6 +26,7 @@ public final class ApplicationState {
     private final Map<String, CommentTemplate> templatesByLabel = new LinkedHashMap<>();
     private final Map<Long, DraftComment> draftsById = new LinkedHashMap<>();
     private final Map<Long, ViralPostCandidate> candidatesById = new LinkedHashMap<>();
+    private Optional<ThreadsCredentials> threadsCredentials = ThreadsCredentials.fromEnvironment();
 
     public ApplicationState() {
         upsertCommentTemplate(CommentTemplate.DEFAULT_LABEL, CommentTemplate.ANY_LANGUAGE, DEFAULT_TEMPLATE, true);
@@ -35,13 +37,49 @@ public final class ApplicationState {
         values.put("template", templatesByLabel.get(CommentTemplate.DEFAULT_LABEL).template());
         values.put("templates", listCommentTemplates());
         values.put("affiliateLinks", listAffiliateLinks());
-        values.put("postingMode", "manual_review_only");
+        values.put("postingMode", "draft_manual_review_and_official_threads_publish");
+        values.put("threadsGraph", threadsGraphConfigSnapshot());
         values.put("threadsAutomation", Map.of(
                 "loginCredentials", false,
                 "viralDiscovery", false,
-                "autoComment", false
+                "autoComment", false,
+                "officialPublishing", true
         ));
         return values;
+    }
+
+    public synchronized Map<String, Object> configureThreadsGraph(String threadsUserId, String accessToken) {
+        threadsCredentials = Optional.of(new ThreadsCredentials(threadsUserId, accessToken));
+        return threadsCredentials.get().toSafeMap();
+    }
+
+    public synchronized Map<String, Object> threadsGraphConfigSnapshot() {
+        Map<String, Object> values = new LinkedHashMap<>();
+        values.put("configured", threadsCredentials.isPresent());
+        values.put("supportedMediaTypes", List.of("TEXT", "IMAGE", "CAROUSEL", "VIDEO"));
+        threadsCredentials.ifPresent(credentials -> values.putAll(credentials.toSafeMap()));
+        return values;
+    }
+
+    public synchronized ThreadsCredentials resolveThreadsCredentials(
+            Optional<String> requestThreadsUserId,
+            Optional<String> requestAccessToken
+    ) {
+        if (requestThreadsUserId.isPresent() || requestAccessToken.isPresent()) {
+            if (requestThreadsUserId.isEmpty() || requestAccessToken.isEmpty()) {
+                throw new ApiException(
+                        400,
+                        "THREADS_CREDENTIALS_INCOMPLETE",
+                        "Provide both threadsUserId and accessToken, or configure them once via /api/config/threads-graph"
+                );
+            }
+            return new ThreadsCredentials(requestThreadsUserId.get(), requestAccessToken.get());
+        }
+        return threadsCredentials.orElseThrow(() -> new ApiException(
+                400,
+                "THREADS_GRAPH_NOT_CONFIGURED",
+                "Configure threadsUserId and accessToken via /api/config/threads-graph or pass them in the request"
+        ));
     }
 
     public synchronized Map<String, Object> updateTemplate(String newTemplate) {

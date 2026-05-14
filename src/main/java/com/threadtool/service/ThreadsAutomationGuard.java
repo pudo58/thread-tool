@@ -10,7 +10,7 @@ public final class ThreadsAutomationGuard {
         return new ApiException(
                 403,
                 "THREADS_AUTOMATION_DISABLED",
-                operation + " is not supported. This backend only prepares reviewable comment drafts."
+                operation + " is not supported. Use official Threads Graph API publishing endpoints for authorized posts only."
         );
     }
 }
